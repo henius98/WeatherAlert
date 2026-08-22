@@ -1,0 +1,29 @@
+[
+  {
+    "id": "rain_moderate",
+    "group": null,
+    "field": "rainIntensity",
+    "op": "gte",
+    "value": 2.5,
+    "lead_min": 20,
+    "enabled": true
+  },
+  {
+    "id": "storm_code",
+    "group": "thunderstorm",
+    "field": "weatherCode",
+    "op": "in",
+    "value": [8000],
+    "lead_min": 20,
+    "enabled": true
+  },
+  {
+    "id": "storm_gust",
+    "group": "thunderstorm",
+    "field": "windGust",
+    "op": "gte",
+    "value": 40,
+    "lead_min": 20,
+    "enabled": true
+  }
+]

@@ -1,0 +1,41 @@
+name = "weather-alert"
+main = "build/worker/shim.mjs"
+compatibility_date = "2026-08-22"
+
+[build]
+command = ". \"$HOME/.cargo/env\" 2>/dev/null || true; cargo install -q worker-build && worker-build --release"
+
+# Rain path: every 3 min, 01:00-14:59 UTC == 09:00-22:57 MYT. 280 calls/day.
+# Disaster path: every 10 min, 24/7. data.gov.my is unmetered.
+[triggers]
+crons = ["*/3 1-14 * * *", "*/10 * * * *"]
+
+[vars]
+LAT = "2.8333"
+LON = "101.7000"
+LOC_LABEL = "Sepang"
+MET_DISTRICT_ID = "Ds064"
+MET_DISTRICT_NAME = "Sepang"
+MET_STATE_NAME = "Selangor"
+# Harvested from observe mode before flipping MET_MODE=filter. Empty = no severity gate.
+MET_SEVERITY_KEYWORDS = ""
+WINDOW_START = "9"
+WINDOW_END = "23"
+MET_MODE = "observe"        # observe -> forward every warning unfiltered; filter -> apply severity+relevance
+EVENT_CLOSE_MIN = "30"
+ALL_CLEAR = "true"
+MANUAL_CALLS_PER_HOUR = "4"
+
+# Workers Logs. Free tier includes them; head_sampling_rate 1 is affordable at
+# ~424 invocations/day and this is the only way to see cron failures.
+[observability]
+enabled = true
+
+[observability.logs]
+head_sampling_rate = 1
+
+[[kv_namespaces]]
+binding = "WX"
+id = "f56d0baa452e41e6a514fdce44805da6"
+
+# secrets (wrangler secret put): TOMORROW_KEY TG_TOKEN TG_WEBHOOK_SECRET API_TOKEN OWNER_CHAT_ID

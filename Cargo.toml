@@ -1,0 +1,25 @@
+[package]
+name = "weather-alert"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Worker glue is wasm-only so `cargo test` runs the domain logic natively.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+worker = "0.8"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+# NOTE: `strip = true` breaks the build. wasm-bindgen needs the externref table
+# for its catch wrappers (worker-build passes --force-enable-abort-handler) and
+# stripping removes it: "externref table required for catch wrappers".
+# `panic = "abort"` is likewise incompatible. wasm-opt -Oz in worker-build
+# already handles size; we land at ~0.4 MB gzipped against a 3 MB ceiling.

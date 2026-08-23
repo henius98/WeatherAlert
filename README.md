@@ -8,7 +8,7 @@ Single user, single location. See [PLAN.md](PLAN.md) for the full design rationa
 
 ## Status
 
-Deployed and building. 76 unit tests pass, `worker-build --release` produces a
+Deployed and building. 89 unit tests pass, `worker-build --release` produces a
 ~258 KiB gzipped bundle, and the Worker is live on Cloudflare with its KV
 namespace bound and cron triggers registered.
 
@@ -19,6 +19,10 @@ upstream call, and HTTP routes await a workers.dev subdomain. See
 ## How it works
 
 Two independent paths on two cron triggers:
+
+**Morning brief** at 08:00 MYT carries the day's MET forecast, active warnings and
+yesterday's alert tally — and doubles as the liveness signal. If it stops
+arriving, the monitor is down. Silence must never be ambiguous.
 
 **Rain alerts** fire every 3 minutes from 09:00–23:00 MYT. Each tick makes one
 Tomorrow.io Timelines call for a 30-minute window at 1-minute resolution, then
@@ -35,8 +39,10 @@ higher frequency than the paid path.
 
 ### Alert behaviour
 
-One alert when an event opens. A second alert only if intensity climbs a tier.
-Silence on de-escalation. An all-clear once 30 minutes pass with no match.
+One alert when an event opens, stating **both** when rain starts and how bad it
+gets: *"Rain in ~2 min, violent by ~15 min"*. Reporting the onset alone would
+describe the drizzle and hide the downpour behind it. A second alert only if the
+peak climbs a tier. Silence on de-escalation. The all-clear is off by default.
 
 | Tier | mm/hr |
 |---|---|
@@ -110,7 +116,7 @@ rule table is editable at runtime.
 | `WINDOW_START` / `WINDOW_END` | active hours in MYT (rain path only) |
 | `MET_MODE` | `observe` or `filter` |
 | `EVENT_CLOSE_MIN` | quiet minutes before an event closes (30) |
-| `ALL_CLEAR` | send a "rain has passed" message |
+| `ALL_CLEAR` | send a "rain has passed" message (default off) |
 | `MANUAL_CALLS_PER_HOUR` | cap on live manual reports (4, from 5 spare) |
 
 ### Rules
@@ -162,7 +168,8 @@ hourly and daily caps at 3-minute cadence.
 ## Development
 
 ```sh
-cargo test              # domain layer, runs natively — no wasm needed
+cargo test                    # whole suite, runs natively — no wasm needed
+cargo test --test suite met   # one module
 cargo test -- --nocapture
 npx wrangler dev
 npx wrangler tail
@@ -172,10 +179,16 @@ npx wrangler tail
 tested on the host instead of only in WASM.
 
 ```
-src/domain/   timeutil tiers rules state met forecast tomorrow
-              render commands quota errors util        (pure, tested)
-src/infra/    settings store tomorrow metapi telegram tasks   (wasm-only)
+src/domain/   timeutil tiers rules state met forecast tomorrow daily
+              render commands quota errors util          (pure, no worker dep)
+src/infra/    settings store tomorrow metapi telegram tasks     (wasm-only)
+tests/suite/  main.rs + one file per domain module          (89 tests)
 ```
+
+All tests live in `tests/suite/`; `src/` holds none. They are integration tests,
+so they exercise only the public API — which is what keeps `src/domain/` free of
+the `worker` crate and runnable natively. A new file there must be registered in
+`tests/suite/main.rs` or it silently will not run.
 
 `[profile.release]` deliberately omits `strip` and `panic = "abort"` — both break
 wasm-bindgen's catch wrappers. See AGENTS.md before changing it.

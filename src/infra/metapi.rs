@@ -5,7 +5,6 @@
 //! `contains=` plus a date range returns 2 records instead of 2000, which is
 //! the difference between fitting the 10ms CPU budget and not.
 
-use crate::domain::util::urlencode;
 use worker::{Fetch, Method, Request, Result};
 
 const BASE: &str = "https://api.data.gov.my/weather";
@@ -23,11 +22,6 @@ pub async fn warnings() -> Result<(String, u16)> {
 }
 
 pub async fn forecast(district: &str, date_start: &str, date_end: &str) -> Result<(String, u16)> {
-    let url = format!(
-        "{BASE}/forecast/?contains={}@location__location_id&date_start={}&date_end={}",
-        urlencode(district),
-        urlencode(date_start),
-        urlencode(date_end),
-    );
-    get(&url).await
+    let q = crate::domain::forecast::forecast_query(district, date_start, date_end);
+    get(&format!("{BASE}/forecast/?{q}")).await
 }

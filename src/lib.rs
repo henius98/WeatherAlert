@@ -13,11 +13,17 @@ mod entry {
     /// path runs 24/7 and is never silenced.
     #[event(scheduled)]
     pub async fn scheduled(event: ScheduledEvent, env: Env, _ctx: ScheduleContext) {
+        // Explicit dispatch: three schedules now, and silently falling through
+        // to the wrong handler would be hard to notice.
         let cron = event.cron();
-        let result = if cron.starts_with("*/3 ") {
-            tasks::rain_tick(&env).await
-        } else {
-            tasks::warning_tick(&env).await
+        let result = match cron.as_str() {
+            c if c.starts_with("*/3 ") => tasks::rain_tick(&env).await,
+            c if c.starts_with("*/10 ") => tasks::warning_tick(&env).await,
+            "0 0 * * *" => tasks::daily_tick(&env).await,
+            other => {
+                console_error!("unrecognised cron {other}; no handler ran");
+                Ok(())
+            }
         };
         if let Err(e) = result {
             console_error!("cron {cron} failed: {e}");

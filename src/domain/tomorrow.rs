@@ -60,6 +60,31 @@ pub fn parse_timeline(body: &str, now: i64) -> Result<Vec<Minute>, serde_json::E
     Ok(out)
 }
 
+/// Tomorrow.io core layer fields usable on the free plan.
+///
+/// An unvalidated field name is not a harmless typo: it goes straight into the
+/// `fields=` query parameter, Tomorrow.io answers 400, and *every* subsequent
+/// fetch fails. One mistyped rule takes down all alerting.
+pub const VALID_FIELDS: &[&str] = &[
+    "cloudBase", "cloudCeiling", "cloudCover", "dewPoint", "evapotranspiration",
+    "freezingRainIntensity", "humidity", "precipitationProbability",
+    "pressureSeaLevel", "pressureSurfaceLevel", "rainAccumulation",
+    "rainIntensity", "sleetIntensity", "snowAccumulation", "snowIntensity",
+    "temperature", "temperatureApparent", "uvHealthConcern", "uvIndex",
+    "visibility", "weatherCode", "windDirection", "windGust", "windSpeed",
+];
+
+pub fn is_valid_field(f: &str) -> bool {
+    VALID_FIELDS.contains(&f)
+}
+
+/// Forecast window to request, sized to the widest rule so a long `lead_min`
+/// is not silently truncated. Costs no extra API call — only a longer response.
+pub fn window_minutes(rules: &[crate::domain::rules::Rule]) -> u32 {
+    let want = crate::domain::rules::max_lead_min(rules).saturating_add(5);
+    want.clamp(30, 120)
+}
+
 /// Distinct fields referenced by the rule table, for the `fields=` query param.
 /// `rainIntensity` is always included because the tier ladder needs it even
 /// when no rule mentions it.
@@ -73,81 +98,4 @@ pub fn required_fields(rules: &[crate::domain::rules::Rule]) -> Vec<String> {
     f.sort();
     f.dedup();
     f
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::domain::rules::{Op, Rule, Value};
-
-    const NOW: i64 = 1787403600; // 2026-08-22T13:00:00Z
-
-    fn body() -> String {
-        r#"{"data":{"timelines":[{"timestep":"1m","intervals":[
-          {"startTime":"2026-08-22T13:00:00Z","values":{"rainIntensity":0,"windGust":5.1,"weatherCode":1000}},
-          {"startTime":"2026-08-22T13:07:00Z","values":{"rainIntensity":3.4,"windGust":12.0,"weatherCode":4001}},
-          {"startTime":"2026-08-22T13:19:00Z","values":{"rainIntensity":11.2,"windGust":48.0,"weatherCode":8000}}
-        ]}]}}"#
-            .to_string()
-    }
-
-    #[test]
-    fn maps_intervals_to_minute_offsets() {
-        let tl = parse_timeline(&body(), NOW).unwrap();
-        assert_eq!(tl.len(), 3);
-        assert_eq!(tl.iter().map(|m| m.offset_min).collect::<Vec<_>>(), vec![0, 7, 19]);
-        assert_eq!(tl[2].fields["rainIntensity"], 11.2);
-        assert_eq!(tl[2].fields["weatherCode"], 8000.0);
-    }
-
-    #[test]
-    fn drops_intervals_already_in_the_past() {
-        let tl = parse_timeline(&body(), NOW + 600).unwrap();
-        assert_eq!(tl.iter().map(|m| m.offset_min).collect::<Vec<_>>(), vec![9]);
-    }
-
-    #[test]
-    fn null_and_non_numeric_values_are_dropped_not_zeroed() {
-        let b = r#"{"data":{"timelines":[{"intervals":[
-          {"startTime":"2026-08-22T13:00:00Z","values":{"rainIntensity":null,"cloudBase":"n/a","windGust":9.0}}
-        ]}]}}"#;
-        let tl = parse_timeline(b, NOW).unwrap();
-        assert_eq!(tl.len(), 1);
-        assert!(!tl[0].fields.contains_key("rainIntensity"), "null must not become 0.0");
-        assert!(!tl[0].fields.contains_key("cloudBase"));
-        assert_eq!(tl[0].fields["windGust"], 9.0);
-    }
-
-    #[test]
-    fn empty_and_malformed_payloads_are_handled() {
-        assert!(parse_timeline(r#"{"data":{"timelines":[]}}"#, NOW).unwrap().is_empty());
-        assert!(parse_timeline(r#"{"data":{}}"#, NOW).unwrap().is_empty());
-        assert!(parse_timeline("not json", NOW).is_err());
-    }
-
-    #[test]
-    fn required_fields_always_include_rain_intensity() {
-        let rules = vec![Rule {
-            id: "g".into(), group: None, field: "windGust".into(),
-            op: Op::Gte, value: Value::Num(40.0), lead_min: 20, enabled: true,
-        }];
-        assert_eq!(required_fields(&rules), vec!["rainIntensity", "windGust"]);
-        assert_eq!(required_fields(&[]), vec!["rainIntensity"]);
-    }
-
-    #[test]
-    fn end_to_end_rule_match_against_a_real_payload() {
-        use crate::domain::rules::first_match;
-        use crate::domain::tiers::Tier;
-        let rules = vec![
-            Rule { id: "a".into(), group: Some("g1".into()), field: "weatherCode".into(),
-                   op: Op::In, value: Value::Set(vec![8000.0]), lead_min: 20, enabled: true },
-            Rule { id: "b".into(), group: Some("g1".into()), field: "windGust".into(),
-                   op: Op::Gte, value: Value::Num(40.0), lead_min: 20, enabled: true },
-        ];
-        let tl = parse_timeline(&body(), NOW).unwrap();
-        let m = first_match(&rules, &tl).unwrap();
-        assert_eq!(m.offset_min, 19);
-        assert_eq!(Tier::from_rain_intensity(tl[2].fields["rainIntensity"]), Tier::Heavy);
-    }
 }

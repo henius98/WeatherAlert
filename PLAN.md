@@ -11,7 +11,7 @@ Two independent alert paths, one location, Telegram delivery.
 | Tomorrow.io calls/day | 500 | 280 | 220 |
 | Worker requests/day | 100,000 | ~424 | — |
 | Worker CPU per tick | 10 ms | ~30 float comparisons | large |
-| KV writes/day | 1,000 | ~315 | 685 |
+| KV writes/day | 1,000 | ~330 | 670 |
 | Cron triggers | 3–5 | 2 | — |
 | Bundle (gzipped) | 3 MB | 257 KiB measured | 92% |
 
@@ -121,7 +121,8 @@ locations). Moving house needs a redeploy.
 
 ## Layout
 
-    src/domain/   pure, no worker dependency -> `cargo test` runs on the host
+    tests/suite/  every test, one file per domain module, one binary
+    src/domain/   pure, no worker dependency -> the suite runs on the host
       timeutil.rs epoch<->civil, MYT offset, active window
       tiers.rs    intensity ladder
       rules.rs    DNF evaluator
@@ -131,7 +132,7 @@ locations). Moving house needs a redeploy.
 
 ## Status
 
-Complete and deployed. 76 unit tests pass; `worker-build --release` yields 257 KiB gzipped
+Complete and deployed. 89 unit tests pass; `worker-build --release` yields 257 KiB gzipped
 (3 MB ceiling); `wrangler deploy --dry-run` validates.
 
 Build-flag finding: `strip = true` and `panic = "abort"` both break the build —

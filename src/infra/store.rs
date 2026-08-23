@@ -2,6 +2,7 @@
 //! write here must be gated on an actual state transition.
 
 use crate::domain::errors::ErrState;
+use crate::domain::daily::DailyLog;
 use crate::domain::quota::Quota;
 use crate::domain::met::MetState;
 use crate::domain::rules::Rule;
@@ -15,6 +16,7 @@ pub const K_MET: &str = "st:met";
 pub const K_ERR: &str = "st:err";
 pub const K_QUOTA: &str = "st:quota";
 pub const K_SNAPSHOT: &str = "st:snapshot";
+pub const K_DAILY: &str = "st:daily";
 
 pub struct Store {
     kv: worker::kv::KvStore,
@@ -72,6 +74,12 @@ impl Store {
     }
     pub async fn put_quota(&self, v: &Quota) -> Result<()> {
         self.put(K_QUOTA, v).await
+    }
+    pub async fn daily(&self) -> Result<DailyLog> {
+        self.get(K_DAILY).await
+    }
+    pub async fn put_daily(&self, v: &DailyLog) -> Result<()> {
+        self.put(K_DAILY, v).await
     }
     pub async fn snapshot(&self) -> Result<Option<String>> {
         self.kv.get(K_SNAPSHOT).text().await.map_err(kv_err)

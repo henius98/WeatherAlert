@@ -16,11 +16,13 @@ pub async fn timeline(
     lon: &str,
     fields: &[String],
     key: &str,
+    window_min: u32,
 ) -> Result<Fetched> {
     let url = format!(
-        "https://api.tomorrow.io/v4/timelines?location={}&fields={}&timesteps=1m&startTime=now&endTime=nowPlus30m&units=metric&apikey={}",
+        "https://api.tomorrow.io/v4/timelines?location={}&fields={}&timesteps=1m&startTime=now&endTime=nowPlus{}m&units=metric&apikey={}",
         urlencode(&format!("{lat},{lon}")),
         urlencode(&fields.join(",")),
+        window_min,
         urlencode(key),
     );
     let req = Request::new(&url, Method::Get)?;

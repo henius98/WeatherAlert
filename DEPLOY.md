@@ -7,50 +7,39 @@ local wrangler OAuth login.
 
 | Item | State |
 |---|---|
-| Worker script `weather-alert` | **uploaded** |
+| Worker script `weather-alert` | **deployed**, `https://weather-alert.ing-rd98.workers.dev` |
 | KV namespace `WX` | **created**, `f56d0baa452e41e6a514fdce44805da6`, bound |
 | `cfg:rules` | **seeded** from `rules.seed.json`, read back OK |
 | `API_TOKEN`, `TG_WEBHOOK_SECRET` | **set** (generated locally, rotate if you like) |
 | `TOMORROW_KEY`, `TG_TOKEN`, `OWNER_CHAT_ID` | **placeholders** — hold `REPLACE_ME…` |
-| Cron triggers | **NOT registered** — blocked, see below |
-| HTTP routes | **none** — blocked, same cause |
-| workers.dev subdomain | **not registered** |
+| Cron triggers | **registered**, all three |
+| HTTP routes | **live** on the workers.dev subdomain |
+| workers.dev subdomain | **registered**, `ing-rd98` |
+| Telegram webhook | **not registered** — needs `TG_TOKEN` first |
 
-Nothing is running yet. The script uploads fine, but neither the routes nor the
-cron schedules can be attached.
+The Worker is deployed and the schedules fire, but every handler short-circuits
+on the first line: three secrets still hold `REPLACE_ME…`. Steps 2, 3 and 5
+below are what remains. `Settings::unconfigured()` returns before any upstream
+call, so nothing is fetched, nothing is sent, and no quota is consumed. That is
+the intended unconfigured state, not a failure.
 
-While the three secrets hold `REPLACE_ME…`, `Settings::unconfigured()` short-circuits
-both cron paths before any upstream call. Nothing is fetched, nothing is sent, and
-no quota is consumed. This is the intended unconfigured state, not a failure.
+## Step 1 — workers.dev subdomain — DONE
 
-## Step 1 — register a workers.dev subdomain (only you can do this) — REQUIRED
-
-This blocks everything, not just HTTP. The Cloudflare API rejects cron schedule
-registration for the same reason:
+The subdomain `ing-rd98` is registered, which unblocked both the HTTP routes and
+the cron schedules. Kept here because the failure it caused is opaque:
 
     /accounts/.../workers/scripts/weather-alert/schedules failed
     You need a workers.dev subdomain in order to proceed. [code: 10063]
 
-The account has never opened the Workers dashboard, so no subdomain exists.
-Opening the Workers landing page once creates it. Choosing that name is a
-permanent, account-wide decision, so it is deliberately left to you.
+Cron registration is gated on the subdomain, not just HTTP, and `workers_dev =
+false` does not work around it. If you ever move the Worker to a fresh account,
+open the Workers dashboard once before the first `deploy`.
 
-    open https://dash.cloudflare.com/68dc3bdab34873a4bf2625e3c8a98401/workers/onboarding
-
-Pick a subdomain, then re-run `npx wrangler deploy`. Your Worker becomes:
-
-    https://weather-alert.<your-subdomain>.workers.dev
-
-Alternative if you own a domain on this account: skip the subdomain and add a
-route to `wrangler.toml` instead.
+Alternative if you own a domain on this account: add a route to `wrangler.toml`.
 
     [[routes]]
     pattern = "weather.example.com/*"
     custom_domain = true
-
-Setting `workers_dev = false` does **not** work around this — it was tried, and
-the schedules API returns 10063 regardless. The subdomain is a hard prerequisite
-for cron triggers on this account.
 
 ## Step 2 — the three real secrets
 
@@ -93,26 +82,32 @@ Verify:
 ## Step 5 — register the Telegram webhook
 
     curl "https://api.telegram.org/bot$TG_TOKEN/setWebhook" \
-      -d "url=https://weather-alert.<subdomain>.workers.dev/webhook/telegram" \
+      -d "url=https://weather-alert.ing-rd98.workers.dev/webhook/telegram" \
       -d "secret_token=$TG_WEBHOOK_SECRET"
 
 Confirm with `getWebhookInfo`; `pending_update_count` should settle at 0.
 
 ## Verification
 
-    curl -s https://weather-alert.<subdomain>.workers.dev/health
+    curl -s https://weather-alert.ing-rd98.workers.dev/health
     # -> ok   (answers before config loads, so it works even when unconfigured)
 
     curl -s -o /dev/null -w '%{http_code}\n' \
-      https://weather-alert.<subdomain>.workers.dev/api/report
+      https://weather-alert.ing-rd98.workers.dev/api/report
     # -> 401  (no bearer token)
 
     curl -s -H "Authorization: Bearer $API_TOKEN" \
-      https://weather-alert.<subdomain>.workers.dev/api/report
+      https://weather-alert.ing-rd98.workers.dev/api/report
     # -> {"report":"..."} — "Not configured yet: ..." until step 2 is done
 
     npx wrangler tail --format pretty
-    # a rain tick every 3 min inside 09:00-23:00 MYT; a warning poll every 10 min
+    # a rain tick every 3 min inside 09:00-23:00 MYT, a warning poll every 10 min,
+    # and a morning brief at 00:00 UTC (08:00 MYT)
+
+All three cron triggers are registered and firing. Until the secrets are real,
+each tick logs `<name>_tick skipped: TOMORROW_KEY is not configured` and returns
+without an upstream call — that line in `wrangler tail` is proof the schedule
+works, not a fault.
 
 In Telegram: `/help`, then `/now`, then `/rules`.
 
@@ -135,7 +130,7 @@ without re-reading the budget table in AGENTS.md.
     npx wrangler rollback <version-id>
 
 **Cost.** Everything sits inside free tiers: ~424 Worker requests/day of 100k,
-~315 KV writes/day of 1,000, 280 Tomorrow.io calls/day of 500. data.gov.my is
+~330 KV writes/day of 1,000, 280 Tomorrow.io calls/day of 500. data.gov.my is
 unmetered.
 
 ## Build note

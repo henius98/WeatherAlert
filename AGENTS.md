@@ -6,6 +6,41 @@ under `src/`. [PLAN.md](PLAN.md) has the reasoning; this file has the rules.
 The whole project is shaped by free-tier ceilings that are not obvious from the
 code. Several natural-looking "improvements" break it. Those are listed first.
 
+## Keep FLOW.md current — required
+
+[FLOW.md](FLOW.md) is the normative control-flow reference: five mermaid diagrams
+covering every entry point, guard, and early return. **Any change to control flow
+must update it in the same commit.** A stale flow diagram is worse than none — it
+is read as authoritative and quietly teaches the next reader the wrong model.
+
+Which diagram to touch:
+
+| You changed | Update |
+|---|---|
+| `tasks::rain_tick` | §1 Rain path |
+| `domain::state::step`, tier ladder | §2 Event decision tree |
+| `tasks::warning_tick`, `domain::met` selection | §3 Disaster path |
+| `tasks::build_report`, quota, snapshot fallback | §4 Report |
+| `lib.rs` routing, `commands`, `handle_command` | §5 Bot commands |
+
+It counts as a control-flow change if you add or remove any of: a guard or early
+return, a KV read or write, an upstream call, a branch in an `alt`/`opt`, an entry
+point or route, or a reordering of send-versus-persist. Renaming a helper or
+editing a threshold does not.
+
+Removing a branch means deleting it from the diagram — do not only ever add.
+
+Validate before committing; do not eyeball mermaid:
+
+    # extract and render every block — all five must succeed
+    npx -y @mermaid-js/mermaid-cli -i block.mmd -o block.svg
+
+Then **look at the rendered image**, not just the exit code. Two failure modes
+have already bitten this file: a `Note over X:` spanning one participant clips its
+text, and `stateDiagram-v2` silently merges repeated transitions between the same
+two states — the original event diagram lost its entire escalation path that way,
+which is why §2 is a `flowchart` decision tree rather than a state diagram.
+
 ## Do not do these
 
 **Do not increase Tomorrow.io call frequency.** Free tier is 25 calls/hour, 500/day.
@@ -39,8 +74,9 @@ writes/day and the rain cron ticks 280 times, so one careless per-tick write cos
 assert these; if either fails, the fix is the caller, not the test.
 
 `st:snapshot` is the one deliberate per-tick write (~280/day), because the `/now`
-fallback needs recent data. Actual total is ~315/day of 1,000. If you add another
-per-tick write, re-do this arithmetic first.
+fallback needs recent data. `st:daily` is written only on Open/Escalate plus once
+each morning. Actual total is ~330/day of 1,000. If you add another per-tick
+write, re-do this arithmetic first.
 
 **Do not add `chrono`, `time`, or a TLS/HTTP crate as a direct dependency.** The
 free-tier bundle ceiling is 3 MB gzipped. `src/domain/timeutil.rs` implements the
@@ -77,6 +113,23 @@ chokepoint and redacts every known secret; route new user-facing paths through i
 rather than calling `telegram::send` directly. `domain::util::redact` covers the
 one place that cannot (the command-error reply in `lib.rs`).
 
+**Do not report only the onset minute.** `rules::evaluate` returns onset *and*
+peak tier, and both appear in the alert. Reporting the earliest matching minute
+alone describes the drizzle in front of a downpour — "light rain in 2 min" while
+60 mm/hr arrives at minute 15. The escalation ratchet compares peaks for the same
+reason. `reports_onset_and_peak_not_just_the_drizzle_in_front` guards this.
+
+**Do not remove the morning brief.** `daily_tick` is the only liveness signal.
+Without it a dead Worker and a quiet day both produce silence, which is the one
+failure mode an alerting system cannot have. It is sent even when both MET calls
+fail — weather is secondary to proving the monitor ran.
+
+**Do not accept an unvalidated rule field.** `is_valid_field` gates `/rules add`.
+Field names go straight into the `fields=` query parameter, so one typo makes
+Tomorrow.io 400 *every* subsequent fetch. `classify` treats 400 as transient, so
+alerting would die silently for ~15 minutes before reporting a cause that never
+names the typo.
+
 **Do not let "no data" render as "no rain".** `render::report` takes `have_data`
 precisely so an empty timeline — KV miss, expired snapshot, quota exhausted —
 reports NO DATA. Collapsing the two produces a false all-clear during the exact
@@ -102,6 +155,9 @@ most need to see. (`st:event`, `st:err` and `st:met` may default — losing stat
 degrades gracefully; losing rules does not.)
 
 ## Config traps
+
+**Three cron triggers are in use, at or near the free-plan ceiling.** Adding a
+fourth may be rejected. Fold new periodic work into an existing schedule instead.
 
 **`WINDOW_START`/`WINDOW_END` can only narrow, never widen.** The cron expression
 `*/3 1-14 * * *` is the outer bound; the vars are a second gate inside it. Setting
@@ -188,14 +244,34 @@ messages. Do not bypass the throttle for a "just this once" error path.
 
 ## Testing
 
-```sh
-cargo test          # domain layer, native, no wasm target needed
-```
+Every test lives in `tests/suite/`, one file per domain module, compiled into a
+single binary rooted at `tests/suite/main.rs`. `src/` contains no test code.
+
+    cargo test                       # whole suite
+    cargo test --test suite met      # one module
+    cargo test -- --nocapture
+
+Two things about this layout will trip you up:
+
+**Adding a file is not enough — register it.** `Cargo.toml` sets
+`autotests = false` and declares one explicit `[[test]]` target, because a test
+crate root resolves `mod` against its own directory (`tests/suite.rs` would look
+for `tests/<name>.rs`). A new `tests/suite/foo.rs` is dead code until you add
+`mod foo;` to `tests/suite/main.rs`. It will not fail — it simply will not run.
+
+**These are integration tests: they see only the public API.** A test cannot reach
+a private function or const. That is a deliberate forcing function — it keeps the
+domain layer's surface honest — but it means a genuinely internal helper needs
+either a public wrapper worth having, or coverage through the public function that
+calls it. Do not make something `pub` solely to test it; test it through its caller.
+
+The public-API-only constraint is also what keeps `src/domain/` free of the
+`worker` crate, which is why the suite runs natively with no wasm target.
 
 Add a regression test for every upstream payload surprise, with the observed
-values in the test — the existing MET tests encode real records for exactly this
-reason. Prefer asserting on quota-relevant behaviour (`write_needed`, call
-counts) rather than only on message text; the quota is what breaks in production.
+values in the test — the MET tests encode real records for exactly this reason.
+Prefer asserting on quota-relevant behaviour (`write_needed`, `dirty`, call
+counts) over message text; the quota is what breaks in production.
 
 Do not weaken a failing budget test to make a change pass. Those tests encode
 free-tier ceilings, not preferences.
@@ -204,7 +280,7 @@ free-tier ceilings, not preferences.
 
 Verified on Rust 1.98, `worker` 0.8.5, wrangler 4.125:
 
-    cargo test                                   76 passed
+    cargo test                                   89 passed (tests/suite/)
     worker-build --release                       ok, 257 KiB gzipped
     npx wrangler deploy --dry-run --outdir ...   ok
 

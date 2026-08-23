@@ -2,9 +2,17 @@
 name = "weather-alert"
 version = "0.1.0"
 edition = "2021"
+autotests = false
 
 [lib]
 crate-type = ["cdylib", "rlib"]
+
+# One test binary rooted at tests/suite/main.rs. Declared explicitly because a
+# test crate root resolves `mod` against its own directory, so tests/suite.rs
+# would look for tests/<name>.rs rather than tests/suite/<name>.rs.
+[[test]]
+name = "suite"
+path = "tests/suite/main.rs"
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }

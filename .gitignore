@@ -1,2 +1,18 @@
 /target
 /build
+
+# Wrangler's local state. Holds bundle temporaries, a cached account id, and
+# cf.json — which a `wrangler dev --remote` session fills with the developer's
+# own network metadata (ASN, ISP, country, colo, RTT). None of it is shared
+# state, and cf.json is a small privacy leak if it ships.
+/.wrangler
+
+# Local secret overrides for `wrangler dev`. This project's secrets are real —
+# TOMORROW_KEY, TG_TOKEN, TG_WEBHOOK_SECRET, API_TOKEN, OWNER_CHAT_ID — and
+# OWNER_CHAT_ID is the allowlist guarding the rule table. Ignored before the
+# file exists, because a secret is only ever committed once.
+.dev.vars
+.dev.vars.*
+
+# macOS Finder droppings.
+.DS_Store

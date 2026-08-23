@@ -3,11 +3,13 @@ use crate::domain::errors::{classify, Class};
 use crate::domain::forecast;
 use crate::domain::met::{self, format_observe, Warning};
 use crate::domain::render;
-use crate::domain::rules::{first_match, Rule};
+use crate::domain::daily::{morning_summary, DailyLog};
+use crate::domain::rules::{evaluate, Rule};
 use crate::domain::state::step;
 use crate::domain::tiers::Tier;
 use crate::domain::timeutil::{in_active_window, ymd_myt};
-use crate::domain::tomorrow::{parse_timeline, required_fields};
+use crate::domain::state::Action;
+use crate::domain::tomorrow::{parse_timeline, required_fields, window_minutes};
 use crate::infra::{metapi, settings::Settings, store::Store, telegram, tomorrow};
 use worker::{console_error, console_log, Date, Env, Result};
 
@@ -74,7 +76,8 @@ pub async fn rain_tick(env: &Env) -> Result<()> {
     }
 
     let fields = required_fields(&rules);
-    let fetched = tomorrow::timeline(&s.lat, &s.lon, &fields, &s.tomorrow_key).await;
+    let window = window_minutes(&rules);
+    let fetched = tomorrow::timeline(&s.lat, &s.lon, &fields, &s.tomorrow_key, window).await;
 
     let body = match fetched {
         Ok(f) if f.status == 200 => {
@@ -125,16 +128,12 @@ pub async fn rain_tick(env: &Env) -> Result<()> {
     // still far inside the 1000/day KV budget alongside ~20 state writes.
     log_kv("st:snapshot", store.put_snapshot(&body).await);
 
-    let hit = first_match(&rules, &timeline);
-    let matched = hit.as_ref().map(|m| {
-        let tier = timeline
-            .iter()
-            .find(|x| x.offset_min == m.offset_min)
-            .and_then(|x| x.fields.get("rainIntensity").copied())
-            .map(Tier::from_rain_intensity)
-            .unwrap_or(Tier::Light);
-        (tier, m.offset_min)
-    });
+    // evaluate() reports onset AND peak, so the first alert states how bad it
+    // gets rather than describing only the drizzle in front of the storm.
+    let hit = evaluate(&rules, &timeline);
+    let matched = hit
+        .as_ref()
+        .map(|h| (h.peak_tier, h.onset_min, h.peak_min));
 
     let mut ev = store.event().await.unwrap_or_default();
     if let Some(m) = &hit {
@@ -145,6 +144,16 @@ pub async fn rain_tick(env: &Env) -> Result<()> {
 
     if let Some(msg) = render::alert(&out.action, &s.label, &ids) {
         notify(&s, &msg).await;
+    }
+    // Tally for the morning summary, which is how thresholds get tuned.
+    match &out.action {
+        Action::Open { peak_tier, .. } | Action::Escalate { to: peak_tier, .. } => {
+            let escalation = matches!(out.action, Action::Escalate { .. });
+            let mut log = store.daily().await.unwrap_or_default();
+            log.record(&ymd_myt(now), *peak_tier, escalation);
+            log_kv("st:daily", store.put_daily(&log).await);
+        }
+        _ => {}
     }
     if out.write_needed {
         store.put_event(&ev).await?;
@@ -200,10 +209,65 @@ pub async fn warning_tick(env: &Env) -> Result<()> {
         let places: Vec<&str> = [s.state_name.as_str(), s.district_name.as_str()]
             .into_iter().filter(|x| !x.is_empty()).collect();
         if s.met_observe || met::passes_filter(w, &sev, &places) {
-            notify(&s, &format_observe(w, render::TG_LIMIT)).await;
+            // Observe mode sends the compact form: the severity vocabulary lives
+            // in the title and heading, not in 1.5 KB of prose.
+            let msg = if s.met_observe {
+                met::format_summary(w)
+            } else {
+                format_observe(w, render::TG_LIMIT)
+            };
+            notify(&s, &msg).await;
         }
     }
     store.put_met(&next).await?;
+    Ok(())
+}
+
+/// 08:00 MYT summary. Doubles as the liveness signal: if this stops arriving,
+/// the monitor is down. Costs one Telegram send and two unmetered MET calls.
+pub async fn daily_tick(env: &Env) -> Result<()> {
+    let s = Settings::load(env)?;
+    if let Some(missing) = s.unconfigured() {
+        console_error!("daily_tick skipped: {missing} is not configured");
+        return Ok(());
+    }
+    let now = now_secs();
+    let today = ymd_myt(now);
+    let store = Store::new(env)?;
+
+    // The forecast is context, not a trigger, so a failure degrades to an empty
+    // brief rather than aborting — but it is logged. An unlogged fallback hid a
+    // malformed query behind a brief that merely looked sparse.
+    let days = match metapi::forecast(&s.district, &today, &today).await {
+        Ok((b, 200)) => forecast::parse(&b, &s.district, 1).unwrap_or_default(),
+        Ok((b, st)) => {
+            console_error!("daily forecast HTTP {st}: {}", b.chars().take(200).collect::<String>());
+            Vec::new()
+        }
+        Err(e) => {
+            console_error!("daily forecast fetch failed: {e}");
+            Vec::new()
+        }
+    };
+    let warn_lines: Vec<String> = match metapi::warnings().await {
+        Ok((b, 200)) => serde_json::from_str::<Vec<Warning>>(&b)
+            .unwrap_or_default()
+            .iter()
+            .filter(|w| !w.is_no_advisory() && !w.is_expired(now))
+            .map(|w| w.title().to_string())
+            .collect(),
+        _ => Vec::new(),
+    };
+
+    let prev = store.daily().await.unwrap_or_default();
+    notify(
+        &s,
+        &morning_summary(&s.label, &today, &days, &warn_lines, &prev, (s.window_start, s.window_end)),
+    )
+    .await;
+
+    // Start today's tally fresh so the count always covers one civil day.
+    log_kv("st:daily", store.put_daily(&DailyLog { date: today, ..Default::default() }).await);
     Ok(())
 }
 
@@ -215,7 +279,13 @@ pub async fn build_report(env: &Env) -> Result<String> {
     }
     let now = now_secs();
     let store = Store::new(env)?;
-    let rules = store.rules().await.unwrap_or_default();
+    // Same invariant as the rain path: a corrupt rule table is reported, not
+    // silently defaulted. Here it only selects query fields, but a report that
+    // looks normal while the rules are unreadable is still a lie.
+    let rules = match store.rules().await {
+        Ok(r) => r,
+        Err(e) => return Ok(format!("Rule table unreadable: {e}\nNo rain alerts are firing.")),
+    };
 
     let mut quota = store.quota().await.unwrap_or_default();
     let allow_live = quota.try_spend(now, s.manual_per_hour);
@@ -223,7 +293,8 @@ pub async fn build_report(env: &Env) -> Result<String> {
 
     let body = if allow_live {
         log_kv("st:quota", store.put_quota(&quota).await);
-        match tomorrow::timeline(&s.lat, &s.lon, &required_fields(&rules), &s.tomorrow_key).await {
+        let w = window_minutes(&rules);
+        match tomorrow::timeline(&s.lat, &s.lon, &required_fields(&rules), &s.tomorrow_key, w).await {
             Ok(f) if f.status == 200 => f.body,
             _ => {
                 stale = true;
@@ -252,7 +323,14 @@ pub async fn build_report(env: &Env) -> Result<String> {
 
     let days = match metapi::forecast(&s.district, &ymd_myt(now), &ymd_myt(now + 86_400)).await {
         Ok((b, 200)) => forecast::parse(&b, &s.district, 2).unwrap_or_default(),
-        _ => Vec::new(),
+        Ok((b, st)) => {
+            console_error!("report forecast HTTP {st}: {}", b.chars().take(200).collect::<String>());
+            Vec::new()
+        }
+        Err(e) => {
+            console_error!("report forecast fetch failed: {e}");
+            Vec::new()
+        }
     };
 
     let warn_lines = match metapi::warnings().await {
@@ -268,6 +346,17 @@ pub async fn build_report(env: &Env) -> Result<String> {
     Ok(render::report(&s.label, tier, eta, &days, &warn_lines, stale, have_data))
 }
 
+/// Loads the rule table for a command that may write it back.
+///
+/// Defaulting here would be destructive, not merely lossy: `/rules add` against
+/// an unreadable table would default to empty, push one rule, and persist that —
+/// silently deleting every existing rule.
+async fn rules_for_edit(store: &Store) -> std::result::Result<Vec<Rule>, String> {
+    store.rules().await.map_err(|e| {
+        format!("Rule table unreadable: {e}\nRefusing to edit it — that would overwrite your rules.")
+    })
+}
+
 /// Executes a parsed Telegram command and returns the reply text.
 pub async fn handle_command(env: &Env, text: &str) -> Result<String> {
     let store = Store::new(env)?;
@@ -275,7 +364,10 @@ pub async fn handle_command(env: &Env, text: &str) -> Result<String> {
         Command::Now => build_report(env).await,
         Command::Help => Ok(HELP.to_string()),
         Command::ListRules => {
-            let rules = store.rules().await.unwrap_or_default();
+            let rules = match rules_for_edit(&store).await {
+                Ok(r) => r,
+                Err(m) => return Ok(m),
+            };
             if rules.is_empty() {
                 return Ok("No rules configured. /help shows the rule shape.".into());
             }
@@ -295,7 +387,10 @@ pub async fn handle_command(env: &Env, text: &str) -> Result<String> {
             Ok(render::truncate(s, render::TG_LIMIT))
         }
         Command::AddRule(r) => {
-            let mut rules = store.rules().await.unwrap_or_default();
+            let mut rules = match rules_for_edit(&store).await {
+                Ok(v) => v,
+                Err(m) => return Ok(m),
+            };
             rules.retain(|x| x.id != r.id);
             let id = r.id.clone();
             rules.push(*r);
@@ -303,7 +398,10 @@ pub async fn handle_command(env: &Env, text: &str) -> Result<String> {
             Ok(format!("Added rule {id}."))
         }
         Command::DelRule(id) => {
-            let mut rules: Vec<Rule> = store.rules().await.unwrap_or_default();
+            let mut rules: Vec<Rule> = match rules_for_edit(&store).await {
+                Ok(v) => v,
+                Err(m) => return Ok(m),
+            };
             let before = rules.len();
             rules.retain(|x| x.id != id);
             if rules.len() == before {
@@ -313,7 +411,10 @@ pub async fn handle_command(env: &Env, text: &str) -> Result<String> {
             Ok(format!("Removed rule {id}."))
         }
         Command::SetEnabled(id, on) => {
-            let mut rules = store.rules().await.unwrap_or_default();
+            let mut rules = match rules_for_edit(&store).await {
+                Ok(v) => v,
+                Err(m) => return Ok(m),
+            };
             match rules.iter_mut().find(|x| x.id == id) {
                 Some(r) => {
                     r.enabled = on;

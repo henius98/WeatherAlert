@@ -1,4 +1,5 @@
 pub mod commands;
+pub mod daily;
 pub mod errors;
 pub mod forecast;
 pub mod met;

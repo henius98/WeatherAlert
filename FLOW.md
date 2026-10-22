@@ -86,6 +86,9 @@ sequenceDiagram
     opt Action != Nothing
         T->>TG: alert / escalation / all-clear
     end
+    opt Open or Escalate
+        T->>KV: put st:daily (tally for the morning brief)
+    end
     opt write_needed
         T->>KV: put st:event
         alt put st:event failed
@@ -98,9 +101,6 @@ sequenceDiagram
             end
             T-->>W: return error
         end
-    end
-    opt Open or Escalate
-        T->>KV: put st:daily (tally for the morning brief)
     end
     opt errs.dirty
         T->>KV: put st:err
@@ -135,11 +135,11 @@ flowchart TD
 
     M -->|yes| O2{event open?}
     O2 -->|no| OP[Open<br/>ALERT + write]
-    O2 -->|yes| R{quiet_since<br/>was set?}
-    R -->|yes| RS[Resume rain<br/>quiet_since=None<br/>write]
-    R -->|no| T{peak tier ><br/>stored peak?}
+    O2 -->|yes| T{peak tier ><br/>stored peak?}
     T -->|yes| ES[Escalate<br/>ALERT + write]
-    T -->|no| N3[Nothing<br/>no write<br/>same or lower tier]
+    T -->|no| R{quiet_since<br/>was set?}
+    R -->|yes| RS[Resume rain<br/>quiet_since=None<br/>write]
+    R -->|no| N3[Nothing<br/>no write<br/>same or lower tier]
 ```
 
 The ratchet compares **peak** tiers, so a forecast that worsens anywhere inside
@@ -224,8 +224,7 @@ sequenceDiagram
     participant MET as data.gov.my
 
     U->>W: GET /api/report
-    W->>W: ct_eq(Bearer, API_TOKEN)
-    alt mismatch
+    alt API_TOKEN empty/sentinel or mismatch
         W-->>U: 401
     end
 
@@ -273,12 +272,11 @@ sequenceDiagram
     participant KV as KV (WX)
 
     TG->>W: POST /webhook/telegram
-    W->>W: ct_eq(X-Telegram-Bot-Api-Secret-Token)
-    alt mismatch
+    alt secret empty/sentinel or mismatch
         W-->>TG: 200 empty (quiet to probes)
     end
-    W->>W: ct_eq(chat_id, OWNER_CHAT_ID)
-    alt mismatch
+    W->>W: parse chat_id from update
+    alt owner_chat_id empty/sentinel or mismatch
         Note over W,T: the allowlist matters more than the token
         W-->>TG: 200 empty
     end

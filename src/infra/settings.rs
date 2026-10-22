@@ -37,13 +37,7 @@ impl Settings {
   /// deploy reports plainly instead of making authenticated calls with a
   /// credential we already know is wrong.
   pub fn unconfigured(&self) -> Option<&'static str> {
-    for (name, v) in [
-      ("TOMORROW_KEY", &self.tomorrow_key),
-      ("TG_TOKEN", &self.tg_token),
-      ("OWNER_CHAT_ID", &self.owner_chat_id),
-      ("API_TOKEN", &self.api_token),
-      ("TG_WEBHOOK_SECRET", &self.tg_webhook_secret),
-    ] {
+    for (name, v) in [("TOMORROW_KEY", &self.tomorrow_key), ("TG_TOKEN", &self.tg_token), ("OWNER_CHAT_ID", &self.owner_chat_id)] {
       if v.is_empty() || v.starts_with(SENTINEL) {
         return Some(name);
       }

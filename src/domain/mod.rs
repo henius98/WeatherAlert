@@ -8,6 +8,6 @@ pub mod render;
 pub mod rules;
 pub mod state;
 pub mod tiers;
-pub mod tomorrow;
 pub mod timeutil;
+pub mod tomorrow;
 pub mod util;

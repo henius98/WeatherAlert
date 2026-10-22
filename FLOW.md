@@ -88,6 +88,16 @@ sequenceDiagram
     end
     opt write_needed
         T->>KV: put st:event
+        alt put st:event failed
+            T->>D: should_send(Class::Storage)
+            opt not throttled
+                T->>TG: "State storage write failed"
+            end
+            opt errs.dirty
+                T->>KV: put st:err
+            end
+            T-->>W: return error
+        end
     end
     opt Open or Escalate
         T->>KV: put st:daily (tally for the morning brief)
@@ -117,13 +127,17 @@ flowchart TD
 
     M -->|no| O1{event open?}
     O1 -->|no| N1[Nothing<br/>no write]
-    O1 -->|yes| Q{quiet >= 30 min?}
+    O1 -->|yes| QS{quiet_since<br/>set?}
+    QS -->|no| TR[Transition to quiet<br/>quiet_since=now<br/>write]
+    QS -->|yes| Q{quiet >= 30 min?}
     Q -->|no| N2[Nothing<br/>no write]
     Q -->|yes| CL[Close<br/>ALL-CLEAR + write]
 
     M -->|yes| O2{event open?}
     O2 -->|no| OP[Open<br/>ALERT + write]
-    O2 -->|yes| T{peak tier ><br/>stored peak?}
+    O2 -->|yes| R{quiet_since<br/>was set?}
+    R -->|yes| RS[Resume rain<br/>quiet_since=None<br/>write]
+    R -->|no| T{peak tier ><br/>stored peak?}
     T -->|yes| ES[Escalate<br/>ALERT + write]
     T -->|no| N3[Nothing<br/>no write<br/>same or lower tier]
 ```

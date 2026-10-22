@@ -1,11 +1,9 @@
 //! Event state machine: alert once on open, re-alert only on tier escalation,
 //! close after a quiet gap, optional all-clear.
 
-use crate::domain::daily::DailyLog;
 use crate::domain::render;
 use crate::domain::rules::{evaluate, Hit, Minute, Rule};
 use crate::domain::tiers::Tier;
-use crate::domain::timeutil::ymd_myt;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -120,17 +118,18 @@ fn tier_from_u8(v: u8) -> Tier {
 /// The outcome of evaluating one tick of the rain path.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TickPlan {
+  pub action: Action,
   pub alert_message: Option<String>,
   pub write_event: bool,
-  pub write_daily: bool,
+  /// Set on Open or Escalate: `(peak_tier, is_escalation)`.
+  pub daily_record: Option<(Tier, bool)>,
 }
 
-/// Evaluates a rain timeline against rules and advances event and daily state atomically.
+/// Evaluates a rain timeline against rules and advances event state atomically.
 pub fn evaluate_tick(
   rules: &[Rule],
   timeline: &[Minute],
   event_state: &mut EventState,
-  daily_log: &mut DailyLog,
   now: i64,
   close_after_min: i64,
   all_clear: bool,
@@ -139,18 +138,15 @@ pub fn evaluate_tick(
   let hit = evaluate(rules, timeline);
   let out = step(event_state, hit.as_ref(), now, close_after_min, all_clear);
   let alert_message = render::alert(&out.action, location_label);
-  let mut write_daily = false;
-  match &out.action {
-    Action::Open { peak_tier, .. } | Action::Escalate { to: peak_tier, .. } => {
-      let escalation = matches!(out.action, Action::Escalate { .. });
-      daily_log.record(&ymd_myt(now), *peak_tier, escalation);
-      write_daily = true;
-    }
-    _ => {}
-  }
+  let daily_record = match &out.action {
+    Action::Open { peak_tier, .. } => Some((*peak_tier, false)),
+    Action::Escalate { to: peak_tier, .. } => Some((*peak_tier, true)),
+    _ => None,
+  };
   TickPlan {
+    action: out.action,
     alert_message,
     write_event: out.write_needed,
-    write_daily,
+    daily_record,
   }
 }

@@ -2,7 +2,7 @@
 //! and persists dirty error state to KV atomically.
 
 use crate::domain::errors::{classify, Class, ErrState};
-use crate::infra::{http::HttpGateway, settings::Settings, store::Store};
+use crate::infra::{settings::Settings, store::Store};
 use worker::console_error;
 
 pub struct ErrorRecorder<'a> {
@@ -18,15 +18,9 @@ impl<'a> ErrorRecorder<'a> {
     Self { settings, store, errs, now }
   }
 
-  /// Sends a secret-redacted notification to Telegram.
+  /// Sends a secret-redacted notification to Telegram via the single notify chokepoint.
   pub async fn notify(&self, text: &str) {
-    let safe = crate::domain::util::redact(
-      text,
-      &[&self.settings.tomorrow_key, &self.settings.tg_token, &self.settings.api_token, &self.settings.tg_webhook_secret],
-    );
-    if let Err(e) = HttpGateway::send_telegram(&self.settings.tg_token, &self.settings.owner_chat_id, &safe).await {
-      console_error!("telegram send failed: {e}");
-    }
+    crate::infra::tasks::notify(self.settings, text).await;
   }
 
   /// Records a successful upstream fetch. If the feed was previously failing, sends recovery notice.
@@ -34,6 +28,7 @@ impl<'a> ErrorRecorder<'a> {
     if self.errs.note_success() {
       self.notify("\u{2705} Weather feed recovered.").await;
     }
+    self.flush_dirty().await;
   }
 
   /// Records an HTTP status failure from Tomorrow.io. Classifies, throttles, and alerts.
@@ -56,9 +51,9 @@ impl<'a> ErrorRecorder<'a> {
     self.flush_dirty().await;
   }
 
-  /// Records a specific error class with custom message.
+  /// Records an infrastructure error (Storage or Config) with custom message.
+  /// Does NOT increment feed failure count — storage/config errors do not pollute the feed streak.
   pub async fn report_class(&mut self, class: Class, msg: &str) {
-    self.errs.note_failure();
     if self.errs.should_send(class, self.now) {
       self.notify(msg).await;
     }

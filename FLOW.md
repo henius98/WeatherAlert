@@ -79,13 +79,15 @@ sequenceDiagram
     end
 
     T->>KV: put st:snapshot (only deliberate per-tick write)
-    T->>D: evaluate_tick(rules, timeline, &mut ev, &mut daily) -> TickPlan
+    T->>KV: get st:event
+    T->>D: evaluate_tick(rules, timeline, &mut ev) -> TickPlan
     Note over T,API: evaluate() returns onset AND peak tier —<br/>onset alone understates a storm behind drizzle
 
     opt plan.alert_message
         T->>TG: alert / escalation / all-clear
     end
-    opt plan.write_daily
+    opt plan.daily_record
+        T->>KV: get st:daily
         T->>KV: put st:daily (tally for the morning brief)
     end
     opt plan.write_event
@@ -162,21 +164,23 @@ Runs 24/7 and is never silenced by the active window.
 sequenceDiagram
     autonumber
     participant C as Cron */10
+    participant W as Dispatcher
     participant T as tasks::warning_tick
     participant MET as data.gov.my
     participant D as domain::met
     participant KV as KV (WX)
     participant TG as Telegram
 
-    C->>T: ScheduledEvent (any non-*/3 cron)
-    T->>T: Settings::load
+    C->>W: ScheduledEvent (cron starts with "*/10 ")
+    W->>W: AppContext::load
+    W->>T: warning_tick(&ctx)
     alt unconfigured
-        T-->>C: log + return
+        T-->>W: log + return
     end
 
-    T->>MET: GET /weather/warning/ (trailing slash)
+    T->>MET: HttpGateway::fetch_warnings (/weather/warning/)
     alt error or HTTP != 200
-        T-->>C: log + return
+        T-->>W: log + return
     end
     T->>D: parse [Warning]
     T->>KV: get st:met (seen keys)
@@ -185,7 +189,7 @@ sequenceDiagram
     Note over D,KV: drop No Advisory sentinel<br/>drop expired (null valid_to = open-ended)<br/>dedup on issued|title|valid_from|valid_to
 
     alt nothing new
-        T-->>C: return (no write)
+        T-->>W: return (no write)
     end
 
     loop each new warning
@@ -310,19 +314,21 @@ more importantly, proves the monitor is alive.
 sequenceDiagram
     autonumber
     participant C as Cron 0 0 * * *
+    participant W as Dispatcher
     participant T as tasks::daily_tick
     participant MET as data.gov.my
     participant KV as KV (WX)
     participant TG as Telegram
 
-    C->>T: ScheduledEvent
-    T->>T: Settings::load
+    C->>W: ScheduledEvent ("0 0 * * *")
+    W->>W: AppContext::load
+    W->>T: daily_tick(&ctx)
     alt unconfigured
-        T-->>C: log + return
+        T-->>W: log + return
     end
 
-    T->>MET: district forecast (today)
-    T->>MET: active warnings
+    T->>MET: HttpGateway::fetch_forecast (today)
+    T->>MET: HttpGateway::fetch_warnings
     Note over T,MET: both unmetered, and failure degrades<br/>to "forecast unavailable" rather than to silence
     T->>KV: get st:daily (yesterday's tally)
     T->>TG: outlook + warnings + tally + liveness line

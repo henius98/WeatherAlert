@@ -1,18 +1,17 @@
 //! Dispatcher for Cloudflare Worker entry points: routing HTTP requests and cron events.
 
-use std::sync::Arc;
 use crate::domain::util::ct_eq;
 use crate::infra::{http::HttpGateway, settings::Settings, store::Store, tasks};
 use worker::{console_error, Context, Env, Method, Request, Response, Result, ScheduleContext, ScheduledEvent};
 
 pub struct AppContext {
-  pub settings: Arc<Settings>,
+  pub settings: Settings,
   pub store: Store,
 }
 
 impl AppContext {
   pub fn load(env: &Env) -> Result<Self> {
-    let settings = Arc::new(Settings::load(env)?);
+    let settings = Settings::load(env)?;
     let store = Store::new(env)?;
     Ok(Self { settings, store })
   }

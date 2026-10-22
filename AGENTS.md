@@ -278,10 +278,10 @@ free-tier ceilings, not preferences.
 
 ## Verification status
 
-Verified on Rust 1.98, `worker` 0.8.5, wrangler 4.125:
+Verified on Rust 1.98, `worker` 0.8.7, wrangler 4.151:
 
-    cargo test                                   89 passed (tests/suite/)
-    worker-build --release                       ok, 257 KiB gzipped
+    cargo test                                   99 passed (tests/suite/)
+    worker-build --release                       ok, 260 KiB gzipped
     npx wrangler deploy --dry-run --outdir ...   ok
 
 An unconfigured deploy is a supported state: `Settings::unconfigured()`

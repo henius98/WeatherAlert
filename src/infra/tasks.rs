@@ -18,7 +18,7 @@ pub fn now_secs() -> i64 {
 
 /// The single chokepoint for user-visible text. Redaction lives here rather
 /// than at each call site so a future error path cannot forget it.
-async fn notify(s: &Settings, text: &str) {
+pub(crate) async fn notify(s: &Settings, text: &str) {
   let safe = crate::domain::util::redact(text, &[&s.tomorrow_key, &s.tg_token, &s.api_token, &s.tg_webhook_secret]);
   if let Err(e) = HttpGateway::send_telegram(&s.tg_token, &s.owner_chat_id, &safe).await {
     console_error!("telegram send failed: {e}");
@@ -95,14 +95,15 @@ pub async fn rain_tick(ctx: &AppContext) -> Result<()> {
   log_kv("st:snapshot", ctx.store.put_snapshot(&body).await);
 
   let mut ev = ctx.store.event().await.unwrap_or_default();
-  let mut daily = ctx.store.daily().await.unwrap_or_default();
-  let plan = evaluate_tick(&rules, &timeline, &mut ev, &mut daily, now, s.close_min, s.all_clear, &s.label);
+  let plan = evaluate_tick(&rules, &timeline, &mut ev, now, s.close_min, s.all_clear, &s.label);
 
   if let Some(msg) = plan.alert_message {
     recorder.notify(&msg).await;
   }
-  // Tally for the morning summary, which is how thresholds get tuned.
-  if plan.write_daily {
+  // Tally for the morning summary, read and written only upon Open or Escalate.
+  if let Some((peak_tier, escalation)) = plan.daily_record {
+    let mut daily = ctx.store.daily().await.unwrap_or_default();
+    daily.record(&ymd_myt(now), peak_tier, escalation);
     log_kv("st:daily", ctx.store.put_daily(&daily).await);
   }
   if plan.write_event {

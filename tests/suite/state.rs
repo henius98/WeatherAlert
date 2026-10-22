@@ -2,7 +2,6 @@
 //! Moved out of the source file so the whole suite lives in one place.
 
 use std::collections::BTreeMap;
-use weather_alert::domain::daily::DailyLog;
 use weather_alert::domain::rules::{Hit, Minute, Op, Rule, Value};
 use weather_alert::domain::state::*;
 use weather_alert::domain::tiers::Tier;
@@ -112,7 +111,7 @@ fn quiet_ticks_with_no_open_event_never_write() {
 }
 
 #[test]
-fn evaluate_tick_coordinates_event_alert_and_daily_tally() {
+fn evaluate_tick_coordinates_event_alert_and_daily_plan() {
   let r = Rule {
     id: "r1".into(),
     group: None,
@@ -127,30 +126,26 @@ fn evaluate_tick_coordinates_event_alert_and_daily_tally() {
   let timeline = vec![Minute { offset_min: 10, fields }];
 
   let mut ev = EventState::default();
-  let mut daily = DailyLog::default();
 
-  // Tick 1: Opens event -> alert generated, write_event true, write_daily true
-  let plan1 = evaluate_tick(&[r.clone()], &timeline, &mut ev, &mut daily, 1000, 30, true, "Sepang");
+  // Tick 1: Opens event -> alert generated, write_event true, daily_record is Some((Moderate, false))
+  let plan1 = evaluate_tick(&[r.clone()], &timeline, &mut ev, 1000, 30, true, "Sepang");
   assert!(plan1.alert_message.is_some());
   assert!(plan1.write_event);
-  assert!(plan1.write_daily);
-  assert_eq!(daily.opens.get("moderate"), Some(&1));
+  assert_eq!(plan1.daily_record, Some((Tier::Moderate, false)));
 
-  // Tick 2: Same conditions -> silent, no writes
-  let plan2 = evaluate_tick(&[r.clone()], &timeline, &mut ev, &mut daily, 1180, 30, true, "Sepang");
+  // Tick 2: Same conditions -> silent, no writes, no daily update
+  let plan2 = evaluate_tick(&[r.clone()], &timeline, &mut ev, 1180, 30, true, "Sepang");
   assert!(plan2.alert_message.is_none());
   assert!(!plan2.write_event);
-  assert!(!plan2.write_daily);
-  assert_eq!(daily.opens.get("moderate"), Some(&1));
+  assert_eq!(plan2.daily_record, None);
 
-  // Tick 3: Intensity climbs to Heavy (15.0) -> Escalates!
+  // Tick 3: Intensity climbs to Heavy (15.0) -> Escalates! daily_record is Some((Heavy, true))
   let mut fields_heavy = BTreeMap::new();
   fields_heavy.insert("rainIntensity".into(), 15.0);
   let timeline_heavy = vec![Minute { offset_min: 5, fields: fields_heavy }];
 
-  let plan3 = evaluate_tick(&[r], &timeline_heavy, &mut ev, &mut daily, 1360, 30, true, "Sepang");
+  let plan3 = evaluate_tick(&[r], &timeline_heavy, &mut ev, 1360, 30, true, "Sepang");
   assert!(plan3.alert_message.is_some());
   assert!(plan3.write_event);
-  assert!(plan3.write_daily);
-  assert_eq!(daily.escalations, 1);
+  assert_eq!(plan3.daily_record, Some((Tier::Heavy, true)));
 }

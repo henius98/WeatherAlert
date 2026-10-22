@@ -1,7 +1,9 @@
 //! Tests for `domain::state`.
 //! Moved out of the source file so the whole suite lives in one place.
 
-use weather_alert::domain::rules::Hit;
+use std::collections::BTreeMap;
+use weather_alert::domain::daily::DailyLog;
+use weather_alert::domain::rules::{Hit, Minute, Op, Rule, Value};
 use weather_alert::domain::state::*;
 use weather_alert::domain::tiers::Tier;
 const MIN: i64 = 60;
@@ -81,14 +83,7 @@ fn shower_longer_than_close_gap_does_not_close_on_first_quiet_tick() {
     assert!(!s.write_needed);
   }
   // Simulate KV restore: in KV, st had opened_at = 0, last_match_at = 0, quiet_since = None
-  let mut restored = EventState {
-    open: true,
-    tier: st.tier,
-    opened_at: 0,
-    last_match_at: 0,
-    rule_ids: st.rule_ids.clone(),
-    quiet_since: None,
-  };
+  let mut restored = EventState { open: true, tier: st.tier, opened_at: 0, last_match_at: 0, rule_ids: st.rule_ids.clone(), quiet_since: None };
   // At t = 48 min, rain stops.
   let first_dry = step(&mut restored, None, 48 * MIN, 30, true);
   assert_eq!(first_dry.action, Action::Nothing, "must not close on first dry tick");
@@ -114,4 +109,48 @@ fn quiet_ticks_with_no_open_event_never_write() {
     let s = step(&mut st, None, t * 3 * MIN, 30, true);
     assert!(!s.write_needed);
   }
+}
+
+#[test]
+fn evaluate_tick_coordinates_event_alert_and_daily_tally() {
+  let r = Rule {
+    id: "r1".into(),
+    group: None,
+    field: "rainIntensity".into(),
+    op: Op::Gte,
+    value: Value::Num(2.5),
+    lead_min: 30,
+    enabled: true,
+  };
+  let mut fields = BTreeMap::new();
+  fields.insert("rainIntensity".into(), 4.0); // Moderate tier
+  let timeline = vec![Minute { offset_min: 10, fields }];
+
+  let mut ev = EventState::default();
+  let mut daily = DailyLog::default();
+
+  // Tick 1: Opens event -> alert generated, write_event true, write_daily true
+  let plan1 = evaluate_tick(&[r.clone()], &timeline, &mut ev, &mut daily, 1000, 30, true, "Sepang");
+  assert!(plan1.alert_message.is_some());
+  assert!(plan1.write_event);
+  assert!(plan1.write_daily);
+  assert_eq!(daily.opens.get("moderate"), Some(&1));
+
+  // Tick 2: Same conditions -> silent, no writes
+  let plan2 = evaluate_tick(&[r.clone()], &timeline, &mut ev, &mut daily, 1180, 30, true, "Sepang");
+  assert!(plan2.alert_message.is_none());
+  assert!(!plan2.write_event);
+  assert!(!plan2.write_daily);
+  assert_eq!(daily.opens.get("moderate"), Some(&1));
+
+  // Tick 3: Intensity climbs to Heavy (15.0) -> Escalates!
+  let mut fields_heavy = BTreeMap::new();
+  fields_heavy.insert("rainIntensity".into(), 15.0);
+  let timeline_heavy = vec![Minute { offset_min: 5, fields: fields_heavy }];
+
+  let plan3 = evaluate_tick(&[r], &timeline_heavy, &mut ev, &mut daily, 1360, 30, true, "Sepang");
+  assert!(plan3.alert_message.is_some());
+  assert!(plan3.write_event);
+  assert!(plan3.write_daily);
+  assert_eq!(daily.escalations, 1);
 }

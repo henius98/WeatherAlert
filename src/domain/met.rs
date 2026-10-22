@@ -159,12 +159,8 @@ pub fn format_observe(w: &Warning, budget: usize) -> String {
 
 /// Active non-sentinel warning titles for summaries and reports.
 pub fn active_titles(body: &str, now: i64) -> Vec<String> {
-  let mut titles: Vec<String> = serde_json::from_str::<Vec<Warning>>(body)
-    .unwrap_or_default()
-    .into_iter()
-    .filter(|w| !w.is_no_advisory() && !w.is_expired(now))
-    .map(|w| w.title().to_string())
-    .collect();
+  let mut titles: Vec<String> =
+    serde_json::from_str::<Vec<Warning>>(body).unwrap_or_default().into_iter().filter(|w| !w.is_no_advisory() && !w.is_expired(now)).map(|w| w.title().to_string()).collect();
   titles.sort();
   titles.dedup();
   titles

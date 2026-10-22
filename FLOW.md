@@ -22,17 +22,17 @@ commit. See the "Keeping this file current" rule in [AGENTS.md](AGENTS.md).
 sequenceDiagram
     autonumber
     participant C as Cron */3
-    participant W as lib.rs scheduled
+    participant W as Dispatcher
     participant T as tasks::rain_tick
+    participant ER as ErrorRecorder
     participant KV as KV (WX)
     participant API as Tomorrow.io
     participant D as domain
     participant TG as Telegram
 
     C->>W: ScheduledEvent(cron)
+    W->>W: AppContext::load
     W->>T: cron starts with "*/3 "
-    T->>T: Settings::load
-
     alt secret still REPLACE_ME
         T-->>W: log + return (no upstream call)
     end
@@ -40,12 +40,13 @@ sequenceDiagram
         T-->>W: return
     end
 
-    T->>KV: get st:err
+    T->>ER: ErrorRecorder::new (st:err)
     T->>KV: get cfg:rules
 
     alt cfg:rules unreadable
         Note over T,API: never degrade to an empty table —<br/>that is a silent total failure
-        T->>TG: "Rule table unreadable"
+        T->>ER: report_class(Config)
+        ER->>TG: "Rule table unreadable"
         T-->>W: return
     end
     alt rules empty
@@ -53,57 +54,55 @@ sequenceDiagram
     end
 
     T->>D: required_fields + window_minutes(rules)
-    T->>API: GET /v4/timelines (now .. now+N min, 1m)
+    T->>API: HttpGateway::fetch_timeline (now .. now+N min, 1m)
 
     alt HTTP != 200 or transport error
-        T->>D: note_failure + classify
+        T->>ER: report_http / report_fetch_error
         opt not throttled
-            T->>TG: error message (secrets redacted)
+            ER->>TG: error message (secrets redacted)
         end
         opt errs.dirty
-            T->>KV: put st:err
+            ER->>KV: put st:err
         end
         T-->>W: return
     end
 
-    T->>D: note_success
+    T->>ER: report_success
     opt was failing
-        T->>TG: "feed recovered"
+        ER->>TG: "feed recovered"
     end
     T->>D: parse_timeline
     alt parse error
-        T->>D: note_failure
-        T->>TG: "Timeline parse failed"
+        T->>ER: report_class(Config)
+        ER->>TG: "Timeline parse failed"
         T-->>W: return
     end
 
     T->>KV: put st:snapshot (only deliberate per-tick write)
-    T->>D: evaluate(rules, timeline)
-    Note over T,API: returns onset AND peak tier —<br/>onset alone understates a storm behind drizzle
-    T->>KV: get st:event
-    T->>D: state::step -> Action
+    T->>D: evaluate_tick(rules, timeline, &mut ev, &mut daily) -> TickPlan
+    Note over T,API: evaluate() returns onset AND peak tier —<br/>onset alone understates a storm behind drizzle
 
-    opt Action != Nothing
+    opt plan.alert_message
         T->>TG: alert / escalation / all-clear
     end
-    opt Open or Escalate
+    opt plan.write_daily
         T->>KV: put st:daily (tally for the morning brief)
     end
-    opt write_needed
+    opt plan.write_event
         T->>KV: put st:event
         alt put st:event failed
-            T->>D: should_send(Class::Storage)
+            T->>ER: report_class(Storage)
             opt not throttled
-                T->>TG: "State storage write failed"
+                ER->>TG: "State storage write failed"
             end
             opt errs.dirty
-                T->>KV: put st:err
+                ER->>KV: put st:err
             end
             T-->>W: return error
         end
     end
     opt errs.dirty
-        T->>KV: put st:err
+        ER->>KV: put st:err
     end
 ```
 
@@ -217,7 +216,7 @@ failed write costs a duplicate rather than a dropped warning.
 sequenceDiagram
     autonumber
     participant U as Caller
-    participant W as lib.rs fetch
+    participant W as Dispatcher fetch
     participant T as tasks::build_report
     participant KV as KV (WX)
     participant API as Tomorrow.io
@@ -228,7 +227,7 @@ sequenceDiagram
         W-->>U: 401
     end
 
-    W->>T: build_report
+    W->>T: build_report(&ctx)
     alt unconfigured
         T-->>U: "Not configured yet: X"
     end
@@ -241,7 +240,7 @@ sequenceDiagram
     T->>T: try_spend(cap 4/hour)
     alt budget left
         T->>KV: put st:quota
-        T->>API: live timeline
+        T->>API: HttpGateway::fetch_timeline
         alt fetch fails
             T->>KV: get st:snapshot (stale=true)
         end
@@ -267,7 +266,7 @@ manual report can never push the cron path into a 429.
 sequenceDiagram
     autonumber
     participant TG as Telegram
-    participant W as lib.rs fetch
+    participant W as Dispatcher fetch
     participant T as tasks::handle_command
     participant KV as KV (WX)
 
@@ -281,7 +280,7 @@ sequenceDiagram
         W-->>TG: 200 empty
     end
 
-    W->>T: commands::parse(text)
+    W->>T: handle_command(&ctx)
     alt /now
         T->>T: build_report
     else /rules (read or write)
@@ -293,7 +292,7 @@ sequenceDiagram
     else /help or unknown
         T->>T: static reply
     end
-    W->>TG: sendMessage (redacted)
+    W->>TG: HttpGateway::send_telegram (redacted)
     W-->>TG: 200 empty
 ```
 

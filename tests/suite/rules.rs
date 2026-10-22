@@ -137,10 +137,7 @@ fn two_and_groups_or_against_each_other() {
 fn peak_cannot_precede_onset() {
   // Moderate rain below threshold at minute 1, threshold met at minute 15.
   let r = rule("heavy", None, "rainIntensity", Op::Gte, Value::Num(5.0));
-  let tl = vec![
-    minute(1, &[("rainIntensity", 4.0)]),
-    minute(15, &[("rainIntensity", 5.0)]),
-  ];
+  let tl = vec![minute(1, &[("rainIntensity", 4.0)]), minute(15, &[("rainIntensity", 5.0)])];
   let h = evaluate(&[r], &tl).unwrap();
   assert_eq!(h.onset_min, 15);
   assert_eq!(h.peak_min, 15, "peak must not be chosen from before onset");

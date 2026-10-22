@@ -16,3 +16,6 @@
 
 # macOS Finder droppings.
 .DS_Store
+
+# Editor
+.vscode/

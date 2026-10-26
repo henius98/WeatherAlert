@@ -126,15 +126,7 @@ pub struct TickPlan {
 }
 
 /// Evaluates a rain timeline against rules and advances event state atomically.
-pub fn evaluate_tick(
-  rules: &[Rule],
-  timeline: &[Minute],
-  event_state: &mut EventState,
-  now: i64,
-  close_after_min: i64,
-  all_clear: bool,
-  location_label: &str,
-) -> TickPlan {
+pub fn evaluate_tick(rules: &[Rule], timeline: &[Minute], event_state: &mut EventState, now: i64, close_after_min: i64, all_clear: bool, location_label: &str) -> TickPlan {
   let hit = evaluate(rules, timeline);
   let out = step(event_state, hit.as_ref(), now, close_after_min, all_clear);
   let alert_message = render::alert(&out.action, location_label);
@@ -143,10 +135,5 @@ pub fn evaluate_tick(
     Action::Escalate { to: peak_tier, .. } => Some((*peak_tier, true)),
     _ => None,
   };
-  TickPlan {
-    action: out.action,
-    alert_message,
-    write_event: out.write_needed,
-    daily_record,
-  }
+  TickPlan { action: out.action, alert_message, write_event: out.write_needed, daily_record }
 }

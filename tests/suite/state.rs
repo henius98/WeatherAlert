@@ -112,15 +112,7 @@ fn quiet_ticks_with_no_open_event_never_write() {
 
 #[test]
 fn evaluate_tick_coordinates_event_alert_and_daily_plan() {
-  let r = Rule {
-    id: "r1".into(),
-    group: None,
-    field: "rainIntensity".into(),
-    op: Op::Gte,
-    value: Value::Num(2.5),
-    lead_min: 30,
-    enabled: true,
-  };
+  let r = Rule { id: "r1".into(), group: None, field: "rainIntensity".into(), op: Op::Gte, value: Value::Num(2.5), lead_min: 30, enabled: true };
   let mut fields = BTreeMap::new();
   fields.insert("rainIntensity".into(), 4.0); // Moderate tier
   let timeline = vec![Minute { offset_min: 10, fields }];
